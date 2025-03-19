@@ -1,0 +1,7 @@
+*.DS_Store
+/.idea
+/.vscode
+/.cache
+/build
+/build_debug
+/cmake-build-debug
