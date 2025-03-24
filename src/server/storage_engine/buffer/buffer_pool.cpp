@@ -205,7 +205,7 @@ RC FileBufferPool::unpin_page(Frame *frame)
  */
 RC FileBufferPool::flush_page(Frame &frame)
 {
-  std::scoped_lock lock_guard(lock_);
+  std::scoped_lock lock_guard(lock_); //超出作用域自动解锁
   return flush_page_internal(frame);
 }
 /**
@@ -218,6 +218,29 @@ RC FileBufferPool::flush_page_internal(Frame &frame)
 //  3. 写入数据到文件的目标位置
 //  4. 清除frame的脏标记
 //  5. 记录和返回成功
+
+  //参考load_page
+
+  //要把frame中存储的page(更新后的)放到文件中
+  PageNum page_num = frame.page_num();
+  int64_t offset = ((int64_t)page_num) * BP_PAGE_SIZE;
+  if (lseek(file_desc_, offset, SEEK_SET) == -1) {
+    LOG_ERROR("Failed to find page %s:%d, due to failed to lseek:%s.", file_name_.c_str(), page_num, strerror(errno));
+
+    return RC::IOERR_SEEK;
+  }
+
+  //写入
+  Page &page = frame.page();
+  int ret = writen(file_desc_, &page, BP_PAGE_SIZE);
+  if (ret != 0) {
+    LOG_ERROR("Failed to write page %s, file_desc:%d, page num:%d, due to failed to read data:%s, ret=%d, page count=%d",
+              file_name_.c_str(), file_desc_, page_num, strerror(errno), ret, file_header_->allocated_pages);
+    return RC::IOERR_READ;
+  }
+
+  //清除脏标
+  frame.clear_dirty();
   return RC::SUCCESS;
 }
 
@@ -246,13 +269,56 @@ RC FileBufferPool::flush_all_pages()
  */
 RC FileBufferPool::evict_page(PageNum page_num, Frame *buf)
 {
-  return RC::SUCCESS;
+  RC rc = flush_page(*buf);//TODO ???????
+  if(rc != RC::SUCCESS){
+    return rc;
+  }
+  //buf->clear_page();
+  //TODO free 会怎么样？？
+  return frame_manager_.free(file_desc_, page_num, buf);//TODO ??
+  //TODO 还需要做一些状态检查和内存管理的工作
 }
 /**
  * TODO [Lab1] 需要同学们实现该文件所有页面的驱逐
  */
 RC FileBufferPool::evict_all_pages()
 {
+
+  //清空某个文件的所有的载入页面
+
+  PageNum page_num;
+  
+  std::list<Frame *> frame_list = frame_manager_.find_list(file_desc());
+  for(auto it = frame_list.begin(); it != frame_list.end(); it++){
+    page_num = (*it)->page_num();
+    evict_page(page_num, *it);
+  }
+
+
+  /*BufferPoolIterator iter;
+
+  if(iter.init(*this) != RC::SUCCESS){
+    return RC::INTERNAL;
+  }
+
+  for(;;){
+    if(!iter.has_next()){
+      break;
+    }
+
+    PageNum page_num = iter.next();
+    printf("it::::%d\n", page_num);
+    //这里是所有的page_num
+    Frame *frame = frame_manager_.get(file_desc_, page_num);
+    if(frame == nullptr){
+      continue;
+    }
+    RC rc = evict_page(page_num, frame);
+    if(rc != RC::SUCCESS){
+      return rc;
+    }
+  }*/
+
   return RC::SUCCESS;
 }
 
@@ -517,7 +583,15 @@ RC BufferPoolManager::close_file(const char *_file_name)
  */
 RC BufferPoolManager::flush_page(Frame &frame)
 {
-  return RC::SUCCESS;
+  //根据frame看来自哪个file，然后找到file manager
+  //file manager对应一个文件
+  int frame_fd = frame.file_desc();
+  if(frame_fd == -1){
+    LOG_ERROR("frame file desc is -1");
+    return RC::INTERNAL;
+  }
+
+  return fd_buffer_pools_.find(frame_fd)->second->flush_page(frame);
 }
 
 static BufferPoolManager *default_bpm = nullptr;

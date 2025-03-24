@@ -53,7 +53,28 @@ Frame *FrameManager::get(int file_desc, PageNum page_num)
  */
 int FrameManager::evict_frames(int count, std::function<RC(Frame *frame)> evict_action)
 {
-  return 0;
+  int evict_count = 0;
+  //lock_.lock();
+  //不能在这里lock, 内部free会lock
+  frames_.foreach([this, &evict_count, count, evict_action](const FrameId &frame_id, Frame *frame) -> bool {
+    if (evict_count >= count) {
+      return false; //提前终止
+    }
+    if (frame->pin_count() == 0) {
+      //调用evict action
+      if (evict_action(frame) == RC::SUCCESS) {
+        //allocator_.free(frame);
+        //TODO free方法？？？
+        if(free(frame_id.file_desc(), frame_id.page_num(), frame) == RC::SUCCESS);{ //TODO ?
+          evict_count++;
+        }
+      }
+    }
+    return true;
+  });
+  //lock_.unlock();
+
+  return evict_count;
 }
 
 Frame *FrameManager::get_internal(const FrameId &frame_id)
