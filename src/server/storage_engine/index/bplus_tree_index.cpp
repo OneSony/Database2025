@@ -90,8 +90,35 @@ RC BplusTreeIndex::close()
  */
 RC BplusTreeIndex::insert_entry(const char *record, const RID *rid)
 {
+
+  //record里面是二进制数据！！！！
+
+  //先取出字段
+  const char* multi_keys[MAX_FIELD_AMOUNT];
+  for(int i=0;i<multi_field_metas_.size();i++){
+    multi_keys[i] = new char[multi_field_metas_[i].len()];
+    memcpy((char*)multi_keys[i], record + multi_field_metas_[i].offset(), multi_field_metas_[i].len());
+    //int* p = (int*)multi_keys[i];
+    //printf("multi_keys[%d]:%d\n", i, *p);
+  }
+
+  //查询重复
+  if (index_meta_.is_unique()) {
+    std::list<RID> rid_list;
+    RC rc = index_handler_.get_entry(multi_keys, rid_list, multi_field_metas_.size());
+    if (rc != RC::SUCCESS) {
+      LOG_WARN("Failed to get entry from index. rc=%d:%s", rc, strrc(rc));
+      return rc;
+    }
+    if (!rid_list.empty()) {
+      LOG_WARN("Failed to insert entry into index due to duplicate key. rid=%s", rid->to_string().c_str());
+      return RC::RECORD_DUPLICATE_KEY;
+    }
+  }
+
+  return index_handler_.insert_entry(multi_keys, rid, multi_field_metas_.size());
+
   // TODO [Lab2] 增加索引项的处理逻辑
-  return RC::SUCCESS;
 }
 
 /**
@@ -101,7 +128,17 @@ RC BplusTreeIndex::insert_entry(const char *record, const RID *rid)
 RC BplusTreeIndex::delete_entry(const char *record, const RID *rid)
 {
   // TODO [Lab2] 增加索引项的处理逻辑
-  return RC::SUCCESS;
+
+  //先取出字段
+  const char* multi_keys[MAX_FIELD_AMOUNT];
+  for(int i=0;i<multi_field_metas_.size();i++){
+    multi_keys[i] = new char[multi_field_metas_[i].len()];
+    memcpy((char*)multi_keys[i], record + multi_field_metas_[i].offset(), multi_field_metas_[i].len());
+    //int* p = (int*)multi_keys[i];
+    //printf("multi_keys[%d]:%d\n", i, *p);
+  }
+
+  return index_handler_.delete_entry(multi_keys, rid, index_meta_.field_amount());
 }
 
 IndexScanner *BplusTreeIndex::create_scanner(

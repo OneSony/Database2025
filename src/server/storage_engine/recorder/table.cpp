@@ -367,6 +367,29 @@ RC Table::delete_entry_of_indexes(const char *record, const RID &rid, bool error
 RC Table::insert_record(Record &record)
 {
   RC rc = RC::SUCCESS;
+
+  //先添加index, 如果有问题就停止, 回滚
+  //在insert里面会判断是不是重复
+  for(int i=0;i<indexes_.size();i++){
+    Index *index = indexes_[i];
+    rc = index->insert_entry(record.data(), &record.rid());
+    if (rc != RC::SUCCESS) {
+      LOG_ERROR("Insert record into index failed. table name=%s, index name=%s, rc=%s", table_meta_.name(), index->index_meta().name(), strrc(rc));
+      
+      //回滚
+      RC rc2 = RC::SUCCESS;
+      for(int j=0;j<i;j++){
+        Index *index2 = indexes_[j];
+        rc2 = index2->delete_entry(record.data(), &record.rid());
+        if (rc2 != RC::SUCCESS) {
+          LOG_ERROR("Rollback index entry failed. table name=%s, index name=%s, rc=%s", table_meta_.name(), index2->index_meta().name(), strrc(rc));
+        }
+      }
+      return rc;
+    }
+  }
+
+
   rc = record_handler_->insert_record(record.data(), table_meta_.record_size(), &record.rid());
   if (rc != RC::SUCCESS) {
     LOG_ERROR("Insert record failed. table name=%s, rc=%s", table_meta_.name(), strrc(rc));
@@ -385,6 +408,17 @@ RC Table::delete_record(const Record &record)
   // TODO [Lab2] 增加索引的处理逻辑
 
   rc = record_handler_->delete_record(&record.rid());
+
+  //遍历所有index
+  for(int i=0;i<indexes_.size();i++){
+    Index *index = indexes_[i];
+    rc = index->delete_entry(record.data(), &record.rid());
+    if (rc != RC::SUCCESS) {
+      LOG_ERROR("Delete record from index failed. table name=%s, index name=%s, rc=%s", table_meta_.name(), index->index_meta().name(), strrc(rc));
+      break;
+    }
+  }
+
   return rc;
 }
 
