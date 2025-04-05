@@ -46,8 +46,40 @@ RC IndexScanPhysicalOperator::open(Trx *trx)
 
 RC IndexScanPhysicalOperator::next()
 {
+
+  RC rc;
   RID rid;
+
+  // 清理之前的页面状态
   record_page_handler_.cleanup();
+
+  while (true) {
+    // 获取下一个 RID
+    rc = index_scanner_->next_entry(&rid, isdelete_);
+    if (rc == RC::RECORD_EOF) {
+      return rc; // 没有更多记录
+    }
+    if (rc != RC::SUCCESS) {
+      LOG_WARN("Failed to get next entry from index scanner: %s", strrc(rc));
+      return rc; // 返回错误代码
+    }
+
+    // 通过 RecordHandler 获取记录
+    rc = record_handler_->get_record(record_page_handler_, &rid, readonly_, &current_record_);
+    if (rc == RC::SUCCESS) {
+      // 成功获取记录，退出循环
+      break;
+    } else if (rc == RC::RECORD_NOT_EXIST) {
+      // 如果记录不存在，继续获取下一个 RID
+      continue;
+    } else {
+      LOG_WARN("Failed to get record by RID: %s", strrc(rc));
+      return rc; // 返回其他错误代码
+    }
+  }
+
+  return RC::SUCCESS;
+
 
   // TODO [Lab2] 通过IndexScanner循环获取下一个RID，然后通过RecordHandler获取对应的Record
   // 在现有的查询实现中，会在调用next()方法后通过current_tuple()获取当前的Tuple, 
@@ -55,7 +87,6 @@ RC IndexScanPhysicalOperator::next()
   // 因此该next()方法的主要目的就是将recordHandler获取到的数据填充到current_record_中
   // while(){}
 
-  return RC::SUCCESS;
 }
 
 RC IndexScanPhysicalOperator::close()

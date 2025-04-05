@@ -134,8 +134,6 @@ RC BplusTreeIndex::delete_entry(const char *record, const RID *rid)
   for(int i=0;i<multi_field_metas_.size();i++){
     multi_keys[i] = new char[multi_field_metas_[i].len()];
     memcpy((char*)multi_keys[i], record + multi_field_metas_[i].offset(), multi_field_metas_[i].len());
-    //int* p = (int*)multi_keys[i];
-    //printf("multi_keys[%d]:%d\n", i, *p);
   }
 
   return index_handler_.delete_entry(multi_keys, rid, index_meta_.field_amount());

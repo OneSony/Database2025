@@ -26,6 +26,9 @@
 #include "include/query_engine/planner/operator/group_by_physical_operator.h"
 #include "common/log/log.h"
 #include "include/storage_engine/recorder/table.h"
+#include "include/storage_engine/index/bplus_tree_index.h"
+#include "include/query_engine/planner/operator/index_scan_physical_operator.h"
+#include "include/query_engine/structor/expression/comparison_expression.h"
 
 using namespace std;
 
@@ -86,7 +89,109 @@ RC PhysicalOperatorGenerator::create_plan(
     TableGetLogicalNode &table_get_oper, unique_ptr<PhysicalOperator> &oper, bool is_delete)
 {
   vector<unique_ptr<Expression>> &predicates = table_get_oper.predicates();
-  Index *index = nullptr;
+  Table *table = table_get_oper.table();
+
+  if(predicates.size()==0){
+    //全盘扫
+    auto table_scan_oper = new TableScanPhysicalOperator(table, table_get_oper.table_alias(), table_get_oper.readonly());
+    table_scan_oper->isdelete_ = is_delete;
+    table_scan_oper->set_predicates(std::move(predicates));
+    oper = unique_ptr<PhysicalOperator>(table_scan_oper);
+    LOG_TRACE("use table scan");
+    return RC::SUCCESS;
+  }
+
+
+
+
+  //筛选出可以index的谓词
+
+  //针对可以的index构建operator
+
+  //余下的继续scan
+
+  //需要构造一个oper列表, 然后建立一个树
+  vector<unique_ptr<PhysicalOperator>> oper_list;
+
+  //筛选可以构建index索引的expression
+  vector<unique_ptr<Expression>> rest_predicates;
+
+  for(int i=0;i<predicates.size();i++){
+    //TODO 现在index支持多个表达式吗？？？？如果多个等值检索真的会有用吗
+    auto &predicate = predicates[i];
+    if(predicate->type() == ExprType::COMPARISON){
+      auto compare_expr = dynamic_cast<ComparisonExpr*>(predicate.get());
+      if(compare_expr->comp() == EQUAL_TO){
+
+        //不能move啊，move是会让原本的东西没有
+        auto &left_expr = compare_expr->left();
+        auto &right_expr = compare_expr->right();
+
+        ExprType left_type = compare_expr->left()->type();
+        ExprType right_type = compare_expr->right()->type();
+
+        //需要保证一侧是field一侧是value
+        //left是filed
+        std::vector<Field *> fields;
+        Value value;
+        if(left_type == ExprType::FIELD && right_type == ExprType::VALUE){
+          left_expr->getFields(fields);
+          right_expr->try_get_value(value);
+        }else if(left_type == ExprType::VALUE && right_type == ExprType::FIELD){
+          right_expr->getFields(fields);
+          left_expr->try_get_value(value);
+        }else{
+          //不支持
+          rest_predicates.push_back(std::move(predicate));
+          continue;
+        }
+
+
+        //TODO 如果有多个fields怎么办
+        BplusTreeIndex* bplus_index = dynamic_cast<BplusTreeIndex*>(table_get_oper.table()->find_index_by_field(fields[0]->field_name()));
+        if(bplus_index == nullptr){
+          printf("no bplus index can be used\n");
+          rest_predicates.push_back(std::move(predicate));
+          continue;
+        }
+        printf("found bplus index\n");
+        LOG_TRACE("use bplus tree index");
+        //创建index oper
+        IndexScanPhysicalOperator *index_scan_operator = new IndexScanPhysicalOperator(table, bplus_index, table_get_oper.readonly(), &value, true, &value, true);
+        oper_list.push_back(std::move(unique_ptr<PhysicalOperator>(index_scan_operator)));
+        continue;
+      }
+    }
+
+    //前面没有continue的就会到这里
+    //没被选走的会加入这里
+    rest_predicates.push_back(std::move(predicate));
+    continue;
+  }
+
+
+  //构建scan oper
+  if(rest_predicates.size()>0){
+    auto table_scan_oper = new TableScanPhysicalOperator(table, table_get_oper.table_alias(), table_get_oper.readonly());
+    table_scan_oper->isdelete_ = is_delete;
+    table_scan_oper->set_predicates(std::move(rest_predicates));
+    oper_list.push_back(std::move(unique_ptr<PhysicalOperator>(table_scan_oper)));
+    //oper = unique_ptr<PhysicalOperator>(table_scan_oper);
+    LOG_TRACE("use table scan");
+  }
+
+
+  //复制到真正的oper里
+  if(oper_list.size()==0){
+    return RC::INTERNAL;
+  }
+
+  oper = std::move(oper_list[0]);
+  for(int i=1;i<oper_list.size();i++){
+    oper->add_child(std::move(oper_list[i]));
+  }
+
+    
   // TODO [Lab2] 生成IndexScanOperator的准备工作,主要包含:
   // 1. 通过predicates获取具体的值表达式， 目前应该只支持等值表达式的索引查找
     // example:
@@ -98,11 +203,13 @@ RC PhysicalOperatorGenerator::create_plan(
   // 2. 对应上面example里的process阶段， 找到等值表达式中对应的FieldExpression和ValueExpression(左值和右值)
   // 通过FieldExpression找到对应的Index, 通过ValueExpression找到对应的Value
 
+/*
+  //原本是把所有的predicates直接给oper
   if(index == nullptr){
     Table *table = table_get_oper.table();
     auto table_scan_oper = new TableScanPhysicalOperator(table, table_get_oper.table_alias(), table_get_oper.readonly());
     table_scan_oper->isdelete_ = is_delete;
-    table_scan_oper->set_predicates(std::move(predicates));
+    table_scan_oper->set_predicates(std::move(rest_predicates));
     oper = unique_ptr<PhysicalOperator>(table_scan_oper);
     LOG_TRACE("use table scan");
   }else{
@@ -113,7 +220,7 @@ RC PhysicalOperatorGenerator::create_plan(
     //              new IndexScanPhysicalOperator(table, index, readonly, &value, true, &value, true);
     // oper = unique_ptr<PhysicalOperator>(operator);
   }
-
+*/
   return RC::SUCCESS;
 }
 
