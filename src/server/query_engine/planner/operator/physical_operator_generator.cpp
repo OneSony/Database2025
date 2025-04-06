@@ -158,6 +158,7 @@ RC PhysicalOperatorGenerator::create_plan(
         LOG_TRACE("use bplus tree index");
         //创建index oper
         IndexScanPhysicalOperator *index_scan_operator = new IndexScanPhysicalOperator(table, bplus_index, table_get_oper.readonly(), &value, true, &value, true);
+        index_scan_operator->set_table_alias(table_get_oper.table_alias());
         oper_list.push_back(std::move(unique_ptr<PhysicalOperator>(index_scan_operator)));
         continue;
       }
