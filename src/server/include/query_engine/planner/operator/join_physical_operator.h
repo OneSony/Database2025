@@ -32,4 +32,5 @@ private:
   Trx *trx_ = nullptr;
   JoinedTuple joined_tuple_;  //! 当前关联的左右两个tuple
   std::unique_ptr<Expression> predicate_;
+  bool first_time_ = true; //是否第一次调用next
 };

@@ -23,6 +23,12 @@ RC JoinPhysicalOperator::open(Trx *trx)
     return rc;
   }
 
+  //不可以在这里初始化, open如果返回非SUCCESS会导致无法执行
+  /*rc = left_node->next();
+  if (rc == RC::RECORD_EOF) {
+    return rc;
+  }*/
+
   //右表遍历, 提前打开
   PhysicalOperator *right_node = children_[1].get();
   rc = right_node->open(trx);
@@ -42,13 +48,22 @@ RC JoinPhysicalOperator::next()
   PhysicalOperator *left_node = children_[0].get();
   PhysicalOperator *right_node = children_[1].get();
 
-  while(true) {
-    // 先从左表获取数据
-    RC rc = left_node->next();
+  RC rc = RC::SUCCESS;
+
+  //初始化第一次读取时候的左表第一个tuple
+  if(first_time_ == true){
+    rc = left_node->next();
     if (rc == RC::RECORD_EOF) {
       return rc;
     }
+    first_time_ = false;
+  }
+
+  while(true) {
+    // 不能在这里取左表, 不然每次都会跳过很多, 因为前面的左表的tuple还没遍历完
+    // 这里开始的时候需要初始化好左表
     joined_tuple_.set_left(left_node->current_tuple());
+    //printf("left node: %s\n", left_node->current_tuple()->to_string().c_str());
 
     while(true) {
       // 从右表获取数据
@@ -65,9 +80,16 @@ RC JoinPhysicalOperator::next()
           LOG_ERROR("Failed to open right child operator");
           return rc;
         }
+        rc = left_node->next();
+        if (rc == RC::RECORD_EOF) {
+          // 左表也遍历完了, 直接返回
+          return rc;
+        }
         break;
       }
       joined_tuple_.set_right(right_node->current_tuple());
+      //printf("  --left node: %s\n", left_node->current_tuple()->to_string().c_str());
+      //printf("  --right node: %s\n", right_node->current_tuple()->to_string().c_str());
 
       //判断是否满足连接条件
       bool filter_result = false;
