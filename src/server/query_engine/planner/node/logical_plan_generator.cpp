@@ -1,4 +1,5 @@
 #include <list>
+#include <algorithm>
 
 #include "common/lang/bitmap.h"
 
@@ -93,7 +94,7 @@ unique_ptr<ConjunctionExpr> _transfer_filter_stmt_to_expr(FilterStmt *filter_stm
 RC LogicalPlanGenerator::plan_node(
     SelectStmt *select_stmt, unique_ptr<LogicalNode> &logical_node)
 {
-  const std::vector<Table *> &tables     = select_stmt->tables();
+  const std::vector<Table *> &tables     = select_stmt->tables(); // tables就是SelectSqlNode的relations
   const std::vector<Field *> &all_fields = select_stmt->query_fields();
   RC rc;
 
@@ -102,17 +103,242 @@ RC LogicalPlanGenerator::plan_node(
   // 1. Table scan node
   //TODO [Lab3] 当前只取一个表作为查询表,当引入Join后需要考虑同时查询多个表的情况
   //参考思路: 遍历tables中的所有Table，针对每个table生成TableGetLogicalNode
-   Table *default_table = tables[0];
-   const char *table_name = default_table->name();
-   std::vector<Field> fields;
-   for (auto *field : all_fields) {
-     if (0 == strcmp(field->table_name(), default_table->name())) {
-       fields.push_back(*field);
-     }
-   }
 
-   root = std::unique_ptr<LogicalNode>(
-       new TableGetLogicalNode(default_table, select_stmt->table_alias()[0], fields, true/*readonly*/));
+
+  //先判断哪些是relation, 哪些是join
+  int join_table_count = select_stmt->join_filter_stmts().size();
+  int join_table_start = tables.size() - join_table_count;
+
+  //[0, tables.size() - join_table_count)是笛卡尔积
+  //[tables.size() - join_table_count, tables.size())是condition join
+  //因为join list是按输入顺序排序, 所以按顺序从头开始连接, 就可以保证条件中的表都已经构建了
+
+  
+  //先构建第一个
+  Table *default_table = tables[0];
+  const char *table_name = default_table->name();
+  std::vector<Field> fields;
+  for (auto *field : all_fields) {
+    if (0 == strcmp(field->table_name(), default_table->name())) {
+      fields.push_back(*field);
+    }
+  }
+  root = std::unique_ptr<LogicalNode>(
+    new TableGetLogicalNode(default_table, select_stmt->table_alias()[0], fields, true/*readonly*/));
+
+
+
+  //构建余下的在FROM后面但是JOIN前面的笛卡尔积
+  for(int i = 1; i < join_table_start; i++){
+    Table *table = tables[i];
+    const char *table_name = table->name();
+    std::vector<Field> fields;
+    for (auto *field : all_fields) {
+      if (0 == strcmp(field->table_name(), table->name())) {
+        fields.push_back(*field);
+      }
+    }
+
+    unique_ptr<LogicalNode> table_get_node = unique_ptr<LogicalNode>(
+      new TableGetLogicalNode(table, select_stmt->table_alias()[i], fields, true/*readonly*/));
+
+    
+    //用join node连接root和一个新的get node
+    unique_ptr<JoinLogicalNode> join_node = unique_ptr<JoinLogicalNode>(new JoinLogicalNode());
+    join_node->add_child(std::move(root));
+    join_node->add_child(std::move(table_get_node));
+    join_node->set_condition(nullptr); //笛卡尔积没有条件
+    root = std::move(join_node);
+  }
+
+  //开始构建join list, 有条件
+  for(int i = join_table_start; i < tables.size(); i++){
+    Table *table = tables[i];
+    const char *table_name = table->name();
+    std::vector<Field> fields;
+    for (auto *field : all_fields) {
+      if (0 == strcmp(field->table_name(), table->name())) {
+        fields.push_back(*field);
+      }
+    }
+
+    unique_ptr<LogicalNode> table_get_node = unique_ptr<LogicalNode>(
+      new TableGetLogicalNode(table, select_stmt->table_alias()[i], fields, true/*readonly*/));
+
+    
+    unique_ptr<JoinLogicalNode> join_node = unique_ptr<JoinLogicalNode>(new JoinLogicalNode());
+    join_node->add_child(std::move(root));
+    join_node->add_child(std::move(table_get_node));
+    
+
+    //TODO 这里的condition是啥?
+    auto conjunction_expr = _transfer_filter_stmt_to_expr(select_stmt->join_filter_stmts()[i - join_table_start]);
+    if (conjunction_expr != nullptr) {
+      join_node->set_condition(std::move(conjunction_expr));
+    }else{
+      join_node->set_condition(nullptr);
+    }
+    
+    root = std::move(join_node);
+  }
+
+
+
+
+
+  // 下面不用
+  /*
+  if(tables.size() == 1){
+
+    Table *default_table = tables[0];
+    const char *table_name = default_table->name();
+    std::vector<Field> fields;
+    for (auto *field : all_fields) {
+      if (0 == strcmp(field->table_name(), default_table->name())) {
+        fields.push_back(*field);
+      }
+    }
+    root = std::unique_ptr<LogicalNode>(
+      new TableGetLogicalNode(default_table, select_stmt->table_alias()[0], fields, true));
+
+  }else{
+
+    struct SubTree{
+      std::unique_ptr<LogicalNode> root;
+      std::vector<string> table_names;
+    };
+
+    std::vector<SubTree> sub_trees;
+    //pool初始化
+    for(Table *table : tables){
+      SubTree sub_tree;
+
+      const char *table_name = table->name();
+      std::vector<Field> fields;
+      for (auto *field : all_fields) {
+        if (0 == strcmp(field->table_name(), table->name())) {
+          fields.push_back(*field);
+        }
+      }
+
+      sub_tree.root = std::unique_ptr<LogicalNode>(
+        new TableGetLogicalNode(table, select_stmt->table_alias()[0], fields, true));
+      sub_tree.table_names.push_back(table->name()); //pool需要的参数
+      sub_trees.push_back(std::move(sub_tree));
+    }
+
+
+    for(FilterStmt *join_filter_stmt : select_stmt->join_filter_stmts()){
+      //一个join list涉及到两个表
+      //找到相关的两个表
+
+      Expression *left_expr = join_filter_stmt->filter_units()[0]->left_expr();
+      Expression *right_expr = join_filter_stmt->filter_units()[0]->right_expr();
+      //这里的left_expr和right_expr可能是一个表的字段, 也可能是一个常量
+      //TODO 先不管常量
+
+
+      //两个table应该不同, 即使指向同一个表, 但是有别称
+      if(left_expr->type() == ExprType::FIELD && right_expr->type() == ExprType::FIELD){
+
+      }else{
+        return RC::INVALID_ARGUMENT;
+      }
+
+
+      auto *left_field = static_cast<FieldExpr *>(left_expr);
+      auto *right_field = static_cast<FieldExpr *>(right_expr);
+
+      left_field->table_name();
+      right_field->table_name();
+
+      
+      std::unique_ptr<LogicalNode> left_node;
+      std::unique_ptr<LogicalNode> right_node;
+      std::vector<string> left_table_names;
+      std::vector<string> right_table_names;
+
+      //选节点
+      for(SubTree &sub_tree : sub_trees){
+
+        bool left_found = false;
+        bool right_found = false;
+
+        //检查每个节点的name list中的每一个name
+        for(string &table_name : sub_tree.table_names){
+          if(table_name == left_field->table_name()){
+            left_found = true;
+          }else if(table_name == right_field->table_name()){
+            right_found = true;
+          }
+          if(left_found && right_found){
+            break;
+          }
+        }
+
+        if(left_found && right_found){
+          //不能左右都在一个subtree中
+          return RC::INVALID_ARGUMENT;
+        }
+
+        if(left_found){
+          left_node = std::move(sub_tree.root);
+          sub_tree.root = nullptr;
+          left_table_names = sub_tree.table_names;
+        }else if(right_found){
+          right_node = std::move(sub_tree.root);
+          sub_tree.root = nullptr;
+          right_table_names = sub_tree.table_names;
+        }else{
+          continue;
+        }
+      }
+      sub_trees.erase(
+        std::remove_if(sub_trees.begin(), sub_trees.end(),
+                      [](const SubTree& st) {
+                        return st.root == nullptr;
+                      }),
+        sub_trees.end()
+      );
+
+      unique_ptr<JoinLogicalNode> join_node = unique_ptr<JoinLogicalNode>(new JoinLogicalNode());
+      join_node->add_child(std::move(left_node));
+      join_node->add_child(std::move(right_node));
+
+
+      //TODO 对吗?
+      auto conjunction_expr = _transfer_filter_stmt_to_expr(join_filter_stmt);
+      if (conjunction_expr != nullptr) {
+        join_node->set_condition(std::move(conjunction_expr));
+      }else{
+        return RC::INVALID_ARGUMENT;
+      }
+
+
+      //加入pool
+      SubTree new_sub_tree;
+      new_sub_tree.root = std::move(join_node);
+      for (const auto &table_name : left_table_names) {
+        new_sub_tree.table_names.push_back(table_name);
+      }
+      for (const auto &table_name : right_table_names) {
+        new_sub_tree.table_names.push_back(table_name);
+      }
+      sub_trees.push_back(std::move(new_sub_tree));
+    }
+
+    //遍历完了所有的条件
+    if(sub_trees.size() == 1){
+      root = std::move(sub_trees[0].root);
+    }else{
+      //理论上不应该出现这种情况, 因为就算没有条件也会被放到join list
+      LOG_ERROR("Unexpected sub_trees size: %zu. Expected 1.", sub_trees.size());
+      return RC::INVALID_ARGUMENT;
+    }
+  }
+
+  */
+
 
   // 2. inner join node
   // TODO [Lab3] 完善Join节点的逻辑计划生成, 需要解析并设置Join涉及的表,以及Join使用到的连接条件

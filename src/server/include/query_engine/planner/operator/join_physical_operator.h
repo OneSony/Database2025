@@ -20,7 +20,16 @@ public:
   RC close() override;
   Tuple *current_tuple() override;
 
+  void set_predicate(std::unique_ptr<Expression> &&expr)
+  {
+    predicate_ = std::move(expr);
+  }
+
+private:
+  RC filter(JoinedTuple &tuple, bool &result);
+
 private:
   Trx *trx_ = nullptr;
   JoinedTuple joined_tuple_;  //! 当前关联的左右两个tuple
+  std::unique_ptr<Expression> predicate_;
 };

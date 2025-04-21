@@ -669,6 +669,7 @@ select_stmt:        /*  select 语句的语法解析树*/
       delete $2;
 
       $$->selection.relations.swap(*$4);
+      // 栈的特性所以需要reverse保持和输入顺序一致
       std::reverse($$->selection.relations.begin(), $$->selection.relations.end());
       delete $4;
 
@@ -676,6 +677,7 @@ select_stmt:        /*  select 语句的语法解析树*/
         $$->selection.join_lists.swap(*$5);
         std::reverse($$->selection.join_lists.begin(), $$->selection.join_lists.end());
         for (const auto& join_list : $$->selection.join_lists) {
+          // 每个join_list有一个relation和condition
           $$->selection.relations.emplace_back(join_list.relation);
         }
         delete $5;
