@@ -116,6 +116,27 @@ RC MvccTrx::insert_record(Table *table, Record &record)
   RC rc = RC::SUCCESS;
   // TODO [Lab4] 需要同学们补充代码实现记录的插入，相关提示见文档
 
+  // 可以先添加record, 后续再填写trx
+  rc = table->insert_record(record);
+  ASSERT(rc == RC::SUCCESS, "failed to insert record. rc=%s", strrc(rc));
+  if (rc != RC::SUCCESS) {
+    return rc;
+  }
+  Field begin_xid_field, end_xid_field;
+  trx_fields(table, begin_xid_field, end_xid_field);
+  int32_t insert_id = trx_id_; // 此时还没有提交, 版本号是当前事务的id
+  printf("insert id: %d\n", insert_id);
+
+  //需要去访问table中的record
+  auto record_updater = [ this, &begin_xid_field, &end_xid_field, insert_id](Record &record) {
+    begin_xid_field.set_int(record, -insert_id);
+    end_xid_field.set_int(record, trx_kit_.max_trx_id());
+  };
+  rc = table->visit_record(record.rid(), false/*readonly*/, record_updater);
+
+  //printf("begin: %d\n", begin_xid_field.get_int(record));
+  //printf("end: %d\n", end_xid_field.get_int(record));
+
   pair<OperationSet::iterator, bool> ret = operations_.insert(Operation(Operation::Type::INSERT, table, record.rid()));
   if (!ret.second) {
     rc = RC::INTERNAL;
@@ -128,6 +149,21 @@ RC MvccTrx::delete_record(Table *table, Record &record)
 {
   RC rc = RC::SUCCESS;
   // TODO [Lab4] 需要同学们补充代码实现逻辑上的删除，相关提示见文档
+
+  // 在DeletePhysicalOperator调用时, record必然存在, 但是可能对当前事务不可见, 但是delete的时候会先遍历, 然后经过visit_record的判断!!
+
+  Field begin_xid_field, end_xid_field;
+  trx_fields(table, begin_xid_field, end_xid_field);
+  int32_t delete_id = trx_id_; // 此时还没有提交, 版本号是当前事务的id
+
+  //需要去访问table中的record
+  auto record_updater = [ this, &end_xid_field, delete_id](Record &record) {
+    end_xid_field.set_int(record, -delete_id);
+  };
+  rc = table->visit_record(record.rid(), false/*readonly*/, record_updater);
+
+  //printf("begin: %s\n", begin_xid_field.get_data(record));
+  //printf("end: %s\n", end_xid_field.get_data(record));
 
   operations_.insert(Operation(Operation::Type::DELETE, table, record.rid()));
   return rc;
@@ -144,10 +180,47 @@ RC MvccTrx::delete_record(Table *table, Record &record)
  */
 RC MvccTrx::visit_record(Table *table, Record &record, bool readonly)
 {
-  RC rc = RC::SUCCESS;
   // TODO [Lab4] 需要同学们补充代码实现记录是否可见的判断，相关提示见文档
 
-  return rc;
+  //后续事务只考虑了RECORD_INVISIBLE, record_manager.cpp
+
+  Field begin_xid_field, end_xid_field;
+  trx_fields(table, begin_xid_field, end_xid_field);
+  int32_t begin_xid = begin_xid_field.get_int(record);
+  int32_t end_xid = end_xid_field.get_int(record);
+  int32_t trx_id = trx_id_;
+
+  printf("begin: %d\n", begin_xid);
+  printf("end: %d\n", end_xid);
+  printf("trx_id: %d\n", trx_id);
+
+  if(begin_xid == -trx_id) {
+    // 事务自己插入的记录
+    return RC::SUCCESS;
+  }
+
+  if(end_xid == -trx_id) {
+    // 事务自己删除的记录
+    return RC::RECORD_INVISIBLE;
+  }
+
+  if(begin_xid < 0){
+    // 别人刚插入还没提交, 应该看不到
+    return RC::RECORD_INVISIBLE;
+  }
+
+  if(end_xid < 0){
+    // 别人刚删除还没提交, 应该看得到
+    return RC::SUCCESS;
+  }
+
+  // 事务没有操作
+  if(begin_xid < trx_id && end_xid > trx_id) { //不会存在等号
+    // 事务可见
+    return RC::SUCCESS;
+  }
+
+  return RC::RECORD_INVISIBLE;
 }
 
 RC MvccTrx::start_if_need()
