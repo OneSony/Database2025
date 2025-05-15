@@ -1,5 +1,7 @@
 #include "include/storage_engine/recover/log_manager.h"
 #include "include/storage_engine/transaction/trx.h"
+#include "include/storage_engine/recover/log_entry.h"
+#include "include/storage_engine/transaction/mvcc_trx.h"
 
 RC LogEntryIterator::init(LogFile &log_file)
 {
@@ -124,6 +126,131 @@ RC LogManager::recover(Db *db)
   ASSERT(trx_manager != nullptr, "cannot do recover that trx_manager is null");
 
   // TODO [Lab5] 需要同学们补充代码，相关提示见文档
+
+  printf("hihi\n");
+
+
+  // 首先遍历, 检查需要redo的trx
+  LogEntryIterator log_entry_iter;
+  RC rc = log_entry_iter.init(*log_file_);
+  if (rc != RC::SUCCESS) {
+    LOG_WARN("failed to init log entry iterator. rc=%s", strrc(rc));
+    return rc;
+  }
+
+  //log file只能遍历一次, 所以单独用一个map存下来所有的log
+  std::set<int32_t> committed_trx;
+  std::map<int32_t, std::vector<LogEntry>> redo_set;
+
+  while(1){
+    rc = log_entry_iter.next();
+    if(rc == RC::RECORD_EOF){
+      break;
+    }
+    if (rc != RC::SUCCESS) {
+      LOG_WARN("failed to get next log entry. rc=%s", strrc(rc));
+      return rc;
+    }
+    if (log_entry_iter.valid() == false) {
+      break;
+    }
+
+    printf("log %s\n", log_entry_iter.log_entry().to_string().c_str());
+
+    const LogEntry &log_entry = log_entry_iter.log_entry();
+    redo_set[log_entry.trx_id()].push_back(log_entry);
+
+
+    LogEntryType log_type = log_entry.log_type();
+
+    if(log_type == LogEntryType::MTR_COMMIT){
+      // 事务提交的日志项
+      int32_t trx_id = log_entry.trx_id();
+      committed_trx.insert(trx_id);
+    }
+
+  }
+
+
+  //只redo set中的committed的trx
+  //log file需要归位
+
+  for(auto it : committed_trx){
+    printf("committed trx %d\n", it);
+
+    //从小到大可串行化redo
+    for(auto log_entry : redo_set[it]){
+      printf("redo %s\n", log_entry.to_string().c_str());
+      if(log_entry.log_type() == LogEntryType::MTR_BEGIN){
+
+        trx_manager->create_trx(log_entry.trx_id());
+
+      }else if(log_entry.log_type() == LogEntryType::MTR_COMMIT || log_entry.log_type() == LogEntryType::MTR_ROLLBACK ||
+                log_entry.log_type() == LogEntryType::INSERT || log_entry.log_type() == LogEntryType::DELETE){
+
+        Trx *trx = trx_manager->find_trx(log_entry.trx_id());
+        if (trx == nullptr) {
+          LOG_WARN("failed to find trx. trx id=%d", log_entry.trx_id());
+          continue;
+        }
+        trx->redo(db, log_entry);
+
+      }
+    }
+
+  /*
+  rc = log_entry_iter.init(*log_file_);
+  if (rc != RC::SUCCESS) {
+    LOG_WARN("failed to init log entry iterator. rc=%s", strrc(rc));
+    return rc;
+  }
+
+  while (1) {
+    rc = log_entry_iter.next();
+    if(rc == RC::RECORD_EOF){
+      break;
+    }
+    if (rc != RC::SUCCESS) {
+      LOG_WARN("failed to get next log entry. rc=%s", strrc(rc));
+      return rc;
+    }
+    if (log_entry_iter.valid() == false) {
+      break;
+    }
+
+    printf("log again %s\n", log_entry_iter.log_entry().to_string().c_str());
+
+
+    const LogEntry &log_entry = log_entry_iter.log_entry();
+    if(committed_trx.find(log_entry.trx_id()) == committed_trx.end()){
+      continue;
+    }
+
+    LogEntryType log_type = log_entry.log_type();
+
+    if(log_type == LogEntryType::MTR_BEGIN){ //TODO 一定会有begin吗
+
+      trx_manager->create_trx(log_entry.trx_id());
+
+    }else if(log_type == LogEntryType::MTR_COMMIT || log_type == LogEntryType::MTR_ROLLBACK ||
+              log_type == LogEntryType::INSERT || log_type == LogEntryType::DELETE){
+
+      Trx *trx = trx_manager->find_trx(log_entry.trx_id());
+      if (trx == nullptr) {
+        LOG_WARN("failed to find trx. trx id=%d", log_entry.trx_id());
+        continue;
+      }
+      trx->redo(db, log_entry);
+
+    }
+      */
+
+    /*
+    
+    注意：在TDB Server正常运行过程中，事务在提交时除了把 commit 日志项写入 LogBuffer，还要调用 LogManager::sync() 函数把 LogBuffer 从内存刷到磁盘上的 redo.log 文件。但在把日志刷盘时，LogBuffer中存储的不仅是当前要提交事务的日志项，很可能还缓存了其他活跃事务执行过程中的日志项。这样导致的现象就是，在故障崩溃后进行恢复时，LogEntryIterator 读取到的不仅有已提交的事务的日志，还有一些未提交的事务的日志，但后者不应该被重做，因此同学们要格外思考一下这个问题该如何解决。
+    
+    */
+  }
 
   return RC::SUCCESS;
 }

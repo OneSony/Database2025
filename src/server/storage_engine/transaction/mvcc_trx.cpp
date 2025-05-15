@@ -142,6 +142,12 @@ RC MvccTrx::insert_record(Table *table, Record &record)
     rc = RC::INTERNAL;
     LOG_WARN("failed to insert operation(insertion) into operation set: duplicate");
   }
+
+  if (!recovering_) {
+    rc = log_manager_->append_record_log(LogEntryType::INSERT, trx_id_, table->table_id(), record.rid(), record.len(), 0, record.data());
+  }
+  LOG_TRACE("insert record done. rid=%s, trx_id=%d", record.rid().to_string().c_str(), trx_id_);
+
   return rc;
 }
 
@@ -164,6 +170,10 @@ RC MvccTrx::delete_record(Table *table, Record &record)
 
   //printf("begin: %s\n", begin_xid_field.get_data(record));
   //printf("end: %s\n", end_xid_field.get_data(record));
+
+  if (!recovering_) {
+    rc = log_manager_->append_record_log(LogEntryType::DELETE, trx_id_, table->table_id(), record.rid(), record.len(), 0, record.data());
+  }
 
   operations_.insert(Operation(Operation::Type::DELETE, table, record.rid()));
   return rc;
@@ -373,7 +383,16 @@ RC MvccTrx::redo(Db *db, const LogEntry &log_entry)
 
       // TODO [Lab5] 需要同学们补充代码，相关提示见文档
 
-      operations_.insert(Operation(Operation::Type::INSERT, table, record_entry.rid_));
+      //是redo, 重新操作即可
+
+      table = db->find_table(record_entry.table_id_);
+      ASSERT(table != nullptr, "failed to find table. table id=%d", record_entry.table_id_);
+      Record record;
+      record.set_rid(record_entry.rid_);
+      record.set_data(record_entry.data_, record_entry.data_len_);
+      table->recover_insert_record(record);
+
+      operations_.insert(Operation(Operation::Type::INSERT, table, record_entry.rid_)); //TODO 为什么要insert
     } break;
 
     case LogEntryType::DELETE: {
@@ -382,6 +401,19 @@ RC MvccTrx::redo(Db *db, const LogEntry &log_entry)
 
       // TODO [Lab5] 需要同学们补充代码，相关提示见文档
 
+      table = db->find_table(record_entry.table_id_);
+      ASSERT(table != nullptr, "failed to find table. table id=%d", record_entry.table_id_);
+
+      Field begin_xid_field, end_xid_field;
+      trx_fields(table, begin_xid_field, end_xid_field);
+      int32_t delete_id = log_entry.trx_id();
+
+      //需要去访问table中的record
+      auto record_updater = [ this, &end_xid_field, delete_id](Record &record) {
+        end_xid_field.set_int(record, delete_id); // 不需要赋值负数, 因此此时已经提交了
+      };
+      table->visit_record(record_entry.rid_, false/*readonly*/, record_updater);
+
       operations_.insert(Operation(Operation::Type::DELETE, table, record_entry.rid_));
     } break;
 
@@ -389,11 +421,15 @@ RC MvccTrx::redo(Db *db, const LogEntry &log_entry)
 
       // TODO [Lab5] 需要同学们补充代码，相关提示见文档
 
+      commit_with_trx_id(log_entry.trx_id());
+
     } break;
 
     case LogEntryType::MTR_ROLLBACK: {
 
       // TODO [Lab5] 需要同学们补充代码，相关提示见文档
+
+      rollback(); //TODO ???
 
     } break;
 
