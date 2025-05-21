@@ -390,9 +390,33 @@ RC MvccTrx::redo(Db *db, const LogEntry &log_entry)
       Record record;
       record.set_rid(record_entry.rid_);
       record.set_data(record_entry.data_, record_entry.data_len_);
-      table->recover_insert_record(record);
+      
+      RC rc = RC::SUCCESS;
+      table->recover_insert_record(record); // 通过直接写覆盖的方式插入
 
-      operations_.insert(Operation(Operation::Type::INSERT, table, record_entry.rid_)); //TODO 为什么要insert
+      ASSERT(rc == RC::SUCCESS, "failed to insert record. rc=%s", strrc(rc));
+      if (rc != RC::SUCCESS) {
+        return rc;
+      }
+
+      // 设置版本号
+      Field begin_xid_field, end_xid_field;
+      trx_fields(table, begin_xid_field, end_xid_field);
+      int32_t insert_id = log_entry.trx_id(); // 此时还没有提交, 版本号是当前事务的id
+      printf("insert id: %d\n", insert_id);
+
+      //需要去访问table中的record
+      auto record_updater = [ this, &begin_xid_field, &end_xid_field, insert_id](Record &record) {
+        begin_xid_field.set_int(record, -insert_id);
+        end_xid_field.set_int(record, trx_kit_.max_trx_id());
+      };
+      rc = table->visit_record(record.rid(), false/*readonly*/, record_updater);
+      if(rc != RC::SUCCESS) {
+        return rc;
+      }
+
+
+      operations_.insert(Operation(Operation::Type::INSERT, table, record_entry.rid_)); // commit的时候用于修改所有操作过的版本号
     } break;
 
     case LogEntryType::DELETE: {
@@ -410,7 +434,7 @@ RC MvccTrx::redo(Db *db, const LogEntry &log_entry)
 
       //需要去访问table中的record
       auto record_updater = [ this, &end_xid_field, delete_id](Record &record) {
-        end_xid_field.set_int(record, delete_id); // 不需要赋值负数, 因此此时已经提交了
+        end_xid_field.set_int(record, -delete_id); // 赋成负数, 在commit时会变成正数
       };
       table->visit_record(record_entry.rid_, false/*readonly*/, record_updater);
 
@@ -421,7 +445,7 @@ RC MvccTrx::redo(Db *db, const LogEntry &log_entry)
 
       // TODO [Lab5] 需要同学们补充代码，相关提示见文档
 
-      commit_with_trx_id(log_entry.trx_id());
+      commit_with_trx_id(log_entry.trx_id()); // 模拟commit中修改版本号的操作
 
     } break;
 
